@@ -57,6 +57,6 @@ async def delete(ctx, arg: str):
 async def reset(ctx):
     # B列（今月分）だけをクリア（2行目〜10000行目）
     sheet.batch_clear(["B2:B10000"])
-    await ctx.send("🧹 今月の勤務記録をリセットしました！")
+    await ctx.send("🧹 今月の勤務記録（B列）をリセットしました！")
 
 bot.run(os.environ["TOKEN"])
