@@ -52,27 +52,36 @@ def update_work_time_by_name(name, value, is_subtract=False):
 # --- 自動リセットタスク ---
 @tasks.loop(hours=24)
 async def auto_reset():
-    # 日本時間の毎月1日0時にリセット
     if datetime.now().day == 1:
         sheet.batch_clear(["B2:B10000"])
 
 @bot.event
 async def on_ready():
     auto_reset.start()
-    print("Bot is ready and auto-reset task started.")
+    print("Bot is ready.")
 
 # --- コマンド ---
+
+# 自分の追加
 @bot.command()
 async def work(ctx, minutes: int):
     month, total = update_work_time_by_name(ctx.author.display_name, minutes, is_subtract=False)
-    await ctx.send(f"✅ {ctx.author.display_name} さん、{minutes}分追加しました（累計: {total}分）。")
+    await ctx.send(f"✅ {ctx.author.display_name} さん、{minutes}分追加しました（今月: {month}分 / 累計: {total}分）。")
 
+# 自分の削除
+@bot.command()
+async def delete(ctx, minutes: int):
+    month, total = update_work_time_by_name(ctx.author.display_name, minutes, is_subtract=True)
+    await ctx.send(f"⚠️ {ctx.author.display_name} さんの記録から {minutes}分削除しました（今月: {month}分 / 累計: {total}分）。")
+
+# 幹部用：他人に追加
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
 async def add(ctx, name: str, minutes: int):
     month, total = update_work_time_by_name(name, minutes, is_subtract=False)
     await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加しました。")
 
+# 幹部用：他人の削除
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
 async def sub(ctx, name: str, minutes: int):
@@ -82,12 +91,17 @@ async def sub(ctx, name: str, minutes: int):
     else:
         await ctx.send(f"❌ '{name}' さんが見つかりません。")
 
+# トータル確認
 @bot.command()
 async def total(ctx, name: str = None):
     target = name if name else ctx.author.display_name
     cell = sheet.find(target)
-    total_val = sheet.cell(cell.row, 3).value if cell else "0"
-    await ctx.send(f"📊 '{target}' さんの累計勤務時間は **{total_val}分** です！")
+    if cell:
+        m = sheet.cell(cell.row, 2).value
+        t = sheet.cell(cell.row, 3).value
+        await ctx.send(f"📊 '{target}' さんの勤務時間\n今月: **{m}分** / 累計: **{t}分** です！")
+    else:
+        await ctx.send(f"❌ '{target}' さんはまだ記録がありません。")
 
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
@@ -97,5 +111,5 @@ async def reset(ctx):
 
 # --- 実行 ---
 if __name__ == "__main__":
-    Thread(target=run_web).start() # 叩き起こしサーバー起動
+    Thread(target=run_web).start()
     bot.run(os.environ["TOKEN"])
