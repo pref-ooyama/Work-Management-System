@@ -3,14 +3,11 @@ import discord
 import gspread
 import json
 from discord.ext import commands
-from oauth2client.service_account import ServiceAccountCredentials # ここを確実にインポート
+from oauth2client.service_account import ServiceAccountCredentials
 
 # Google Sheetsの設定
-# 環境変数からJSONを読み込む
 creds_dict = json.loads(os.environ["GOOGLE_SHEETS_JSON"])
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-
-# クレデンシャルの作成
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 sheet = client.open("勤務記録シート").sheet1 
@@ -19,19 +16,20 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ユーザーの勤務時間を更新する関数
-def update_work_time(user_id, value, is_subtract=False):
-    user_id = str(user_id)
-    try:
-        cell = sheet.find(user_id)
-    except:
-        return False
-    
-    if not cell:
-        return False
+KANKU_ROLE_ID = 1397055554144309358
 
+# ユーザー名からC列の合計を取得する関数
+def get_total_by_name(name):
+    cell = sheet.find(name)
+    if not cell:
+        return None
+    return sheet.cell(cell.row, 3).value
+
+def update_work_time_by_name(name, value, is_subtract=False):
+    cell = sheet.find(name)
+    if not cell:
+        return None, None
     row = cell.row
-    # 現在のB列(今月)とC列(累計)の値を取得
     val_b = sheet.cell(row, 2).value
     val_c = sheet.cell(row, 3).value
     current_month = int(val_b) if val_b and val_b.isdigit() else 0
@@ -46,28 +44,50 @@ def update_work_time(user_id, value, is_subtract=False):
         
     sheet.update_cell(row, 2, new_month)
     sheet.update_cell(row, 3, new_total)
-    return True
+    return new_month, new_total
+
+# --- コマンド一覧 ---
 
 @bot.command()
-async def work(ctx, arg: str):
-    if arg.isdigit():
-        if update_work_time(ctx.author.id, int(arg), is_subtract=False):
-            await ctx.send(f"✅ {ctx.author.display_name} さん、{arg}分追加しました。")
-        else:
-            await ctx.send("❌ ユーザーがリストに登録されていません。A列にDiscord IDを入力してください。")
+async def work(ctx, minutes: int):
+    month, total = update_work_time_by_name(ctx.author.display_name, minutes, is_subtract=False)
+    if month is not None:
+        await ctx.send(f"✅ {ctx.author.display_name} さん、{minutes}分追加しました（累計: {total}分）。")
+    else:
+        await ctx.send(f"❌ '{ctx.author.display_name}' さんが登録されていません。")
 
 @bot.command()
-async def delete(ctx, arg: str):
-    if arg.isdigit():
-        if update_work_time(ctx.author.id, int(arg), is_subtract=True):
-            await ctx.send(f"⚠️ {ctx.author.display_name} さん、{arg}分を記録から削除しました。")
-        else:
-            await ctx.send("❌ ユーザーがリストに登録されていません。")
+@commands.has_role(KANKU_ROLE_ID)
+async def add(ctx, name: str, minutes: int):
+    month, total = update_work_time_by_name(name, minutes, is_subtract=False)
+    if month is not None:
+        await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加しました。")
+    else:
+        await ctx.send(f"❌ '{name}' さんが見つかりません。")
 
 @bot.command()
+@commands.has_role(KANKU_ROLE_ID)
+async def sub(ctx, name: str, minutes: int):
+    month, total = update_work_time_by_name(name, minutes, is_subtract=True)
+    if month is not None:
+        await ctx.send(f"⚠️ 幹部権限: '{name}' さんから {minutes}分削除しました。")
+    else:
+        await ctx.send(f"❌ '{name}' さんが見つかりません。")
+
+# !total (自分) または !total UserName (他人)
+@bot.command()
+async def total(ctx, name: str = None):
+    target_name = name if name else ctx.author.display_name
+    total_val = get_total_by_name(target_name)
+    if total_val:
+        await ctx.send(f"📊 '{target_name}' さんの累計勤務時間は **{total_val}分** です！")
+    else:
+        await ctx.send(f"❌ '{target_name}' さんが見つかりません。")
+
+@bot.command()
+@commands.has_role(KANKU_ROLE_ID)
 async def reset(ctx):
-    # B列（今月分）だけをクリア（2行目〜10000行目）
     sheet.batch_clear(["B2:B10000"])
-    await ctx.send("🧹 今月の勤務記録（B列）をリセットしました！累計（C列）はそのままです。")
+    await ctx.send("🧹 幹部権限: 今月の記録をリセットしました。")
 
 bot.run(os.environ["TOKEN"])
