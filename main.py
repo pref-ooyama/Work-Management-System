@@ -18,17 +18,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 KANKU_ROLE_ID = 1397055554144309358
 
-# ユーザー名からC列の合計を取得する関数
-def get_total_by_name(name):
-    cell = sheet.find(name)
-    if not cell:
-        return None
-    return sheet.cell(cell.row, 3).value
-
 def update_work_time_by_name(name, value, is_subtract=False):
     cell = sheet.find(name)
+    
+    # ユーザーが見つからない場合は「新規登録」
     if not cell:
-        return None, None
+        if is_subtract: return None, None # 削除コマンドで新規登録はさせない
+        sheet.append_row([name, value, value])
+        return value, value
+
     row = cell.row
     val_b = sheet.cell(row, 2).value
     val_c = sheet.cell(row, 3).value
@@ -51,19 +49,13 @@ def update_work_time_by_name(name, value, is_subtract=False):
 @bot.command()
 async def work(ctx, minutes: int):
     month, total = update_work_time_by_name(ctx.author.display_name, minutes, is_subtract=False)
-    if month is not None:
-        await ctx.send(f"✅ {ctx.author.display_name} さん、{minutes}分追加しました（累計: {total}分）。")
-    else:
-        await ctx.send(f"❌ '{ctx.author.display_name}' さんが登録されていません。")
+    await ctx.send(f"✅ {ctx.author.display_name} さん、{minutes}分追加しました（累計: {total}分）。")
 
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
 async def add(ctx, name: str, minutes: int):
     month, total = update_work_time_by_name(name, minutes, is_subtract=False)
-    if month is not None:
-        await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加しました。")
-    else:
-        await ctx.send(f"❌ '{name}' さんが見つかりません。")
+    await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加しました。")
 
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
@@ -74,20 +66,20 @@ async def sub(ctx, name: str, minutes: int):
     else:
         await ctx.send(f"❌ '{name}' さんが見つかりません。")
 
-# !total (自分) または !total UserName (他人)
 @bot.command()
 async def total(ctx, name: str = None):
     target_name = name if name else ctx.author.display_name
-    total_val = get_total_by_name(target_name)
-    if total_val:
+    cell = sheet.find(target_name)
+    if cell:
+        total_val = sheet.cell(cell.row, 3).value
         await ctx.send(f"📊 '{target_name}' さんの累計勤務時間は **{total_val}分** です！")
     else:
-        await ctx.send(f"❌ '{target_name}' さんが見つかりません。")
+        await ctx.send(f"❌ '{target_name}' さんはまだ記録がありません。")
 
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
 async def reset(ctx):
     sheet.batch_clear(["B2:B10000"])
-    await ctx.send("🧹 幹部権限: 今月の記録をリセットしました。")
+    await ctx.send("🧹 幹部権限: 今月の勤務記録を全リセットしました。")
 
 bot.run(os.environ["TOKEN"])
