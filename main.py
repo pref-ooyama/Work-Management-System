@@ -2,14 +2,13 @@ import os
 import discord
 import gspread
 import json
-import asyncio
-from datetime import datetime
+from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
-from discord.ext import commands, tasks
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
+# Render等の環境変数から読み込み
 creds_dict = json.loads(os.environ["GOOGLE_SHEETS_JSON"])
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -22,13 +21,22 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 KANKU_ROLE_ID = 1397055554144309358
 
-# --- Flaskサーバー（叩き起こし用） ---
+# --- Flaskサーバー（Render維持用） ---
 app = Flask('')
-@app.route('/')
-def home(): return "Bot is running!"
-def run_web(): app.run(host='0.0.0.0', port=8080)
 
-# --- 機能関数 ---
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+def run_web():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# --- 共通関数 ---
 def update_work_time_by_name(name, value, is_subtract=False):
     cell = sheet.find(name)
     if not cell:
@@ -37,61 +45,28 @@ def update_work_time_by_name(name, value, is_subtract=False):
         return value, value
 
     row = cell.row
-    val_b = sheet.cell(row, 2).value
-    val_c = sheet.cell(row, 3).value
-    current_month = int(val_b) if val_b and val_b.isdigit() else 0
-    current_total = int(val_c) if val_c and val_c.isdigit() else 0
+    val_b = int(sheet.cell(row, 2).value or 0)
+    val_c = int(sheet.cell(row, 3).value or 0)
     
-    new_month = max(0, current_month - value) if is_subtract else current_month + value
-    new_total = max(0, current_total - value) if is_subtract else current_total + value
+    new_month = max(0, val_b - value) if is_subtract else val_b + value
+    new_total = max(0, val_c - value) if is_subtract else val_c + value
         
     sheet.update_cell(row, 2, new_month)
     sheet.update_cell(row, 3, new_total)
     return new_month, new_total
 
-# --- 自動リセットタスク ---
-@tasks.loop(hours=24)
-async def auto_reset():
-    if datetime.now().day == 1:
-        sheet.batch_clear(["B2:B10000"])
-
-@bot.event
-async def on_ready():
-    auto_reset.start()
-    print("Bot is ready.")
-
 # --- コマンド ---
 
-# 自分の追加
 @bot.command()
 async def work(ctx, minutes: int):
     month, total = update_work_time_by_name(ctx.author.display_name, minutes, is_subtract=False)
     await ctx.send(f"✅ {ctx.author.display_name} さん、{minutes}分追加しました（今月: {month}分 / 累計: {total}分）。")
 
-# 自分の削除
 @bot.command()
 async def delete(ctx, minutes: int):
     month, total = update_work_time_by_name(ctx.author.display_name, minutes, is_subtract=True)
     await ctx.send(f"⚠️ {ctx.author.display_name} さんの記録から {minutes}分削除しました（今月: {month}分 / 累計: {total}分）。")
 
-# 幹部用：他人に追加
-@bot.command()
-@commands.has_role(KANKU_ROLE_ID)
-async def add(ctx, name: str, minutes: int):
-    month, total = update_work_time_by_name(name, minutes, is_subtract=False)
-    await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加しました。")
-
-# 幹部用：他人の削除
-@bot.command()
-@commands.has_role(KANKU_ROLE_ID)
-async def sub(ctx, name: str, minutes: int):
-    month, total = update_work_time_by_name(name, minutes, is_subtract=True)
-    if month is not None:
-        await ctx.send(f"⚠️ 幹部権限: '{name}' さんから {minutes}分削除しました。")
-    else:
-        await ctx.send(f"❌ '{name}' さんが見つかりません。")
-
-# トータル確認
 @bot.command()
 async def total(ctx, name: str = None):
     target = name if name else ctx.author.display_name
@@ -102,6 +77,43 @@ async def total(ctx, name: str = None):
         await ctx.send(f"📊 '{target}' さんの勤務時間\n今月: **{m}分** / 累計: **{t}分** です！")
     else:
         await ctx.send(f"❌ '{target}' さんはまだ記録がありません。")
+
+@bot.command()
+async def ranking(ctx):
+    """累計勤務時間のランキングを表示"""
+    data = sheet.get_all_values()
+    if len(data) <= 1:
+        await ctx.send("❌ まだ記録がありません。")
+        return
+    
+    rows = data[1:] 
+    ranking_data = []
+    for row in rows:
+        if len(row) >= 3 and row[2].isdigit():
+            ranking_data.append({"name": row[0], "total": int(row[2])})
+    
+    sorted_ranking = sorted(ranking_data, key=lambda x: x["total"], reverse=True)
+    
+    msg = "📊 **勤務時間ランキング（累計）**\n"
+    for i, item in enumerate(sorted_ranking[:10]):
+        msg += f"{i+1}位: {item['name']} - **{item['total']}分**\n"
+    await ctx.send(msg)
+
+# --- 幹部用 ---
+@bot.command()
+@commands.has_role(KANKU_ROLE_ID)
+async def add(ctx, name: str, minutes: int):
+    update_work_time_by_name(name, minutes, is_subtract=False)
+    await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加しました。")
+
+@bot.command()
+@commands.has_role(KANKU_ROLE_ID)
+async def sub(ctx, name: str, minutes: int):
+    month, _ = update_work_time_by_name(name, minutes, is_subtract=True)
+    if month is not None:
+        await ctx.send(f"⚠️ 幹部権限: '{name}' さんから {minutes}分削除しました。")
+    else:
+        await ctx.send(f"❌ '{name}' さんが見つかりません。")
 
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
