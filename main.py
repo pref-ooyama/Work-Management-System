@@ -2,13 +2,13 @@ import os
 import discord
 import gspread
 import json
+from datetime import datetime, timezone, timedelta
 from discord.ext import commands, tasks
 from flask import Flask
 from threading import Thread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
-# Render等の環境変数から読み込み
 creds_dict = json.loads(os.environ["GOOGLE_SHEETS_JSON"])
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -55,6 +55,19 @@ def update_work_time_by_name(name, value, is_subtract=False):
     sheet.update_cell(row, 3, new_total)
     return new_month, new_total
 
+# --- 自動リセットタスク ---
+@tasks.loop(hours=24)
+async def auto_reset_task():
+    JST = timezone(timedelta(hours=9))
+    now = datetime.now(JST)
+    # 毎月1日にB列（今月分）をクリア（C列の累計は保持）
+    if now.day == 1:
+        cell_list = sheet.range(f"B2:B{sheet.row_count}")
+        for cell in cell_list:
+            cell.value = ''
+        sheet.update_cells(cell_list)
+        print("Monthly reset completed.")
+
 # --- コマンド ---
 
 @bot.command()
@@ -80,11 +93,9 @@ async def total(ctx, name: str = None):
 
 @bot.command()
 async def ranking(ctx):
-    """累計勤務時間のランキングを表示"""
     data = sheet.get_all_values()
     if len(data) <= 1:
-        await ctx.send("❌ まだ記録がありません。")
-        return
+        return await ctx.send("❌ まだ記録がありません。")
     
     rows = data[1:] 
     ranking_data = []
@@ -93,7 +104,6 @@ async def ranking(ctx):
             ranking_data.append({"name": row[0], "total": int(row[2])})
     
     sorted_ranking = sorted(ranking_data, key=lambda x: x["total"], reverse=True)
-    
     msg = "📊 **勤務時間ランキング（累計）**\n"
     for i, item in enumerate(sorted_ranking[:10]):
         msg += f"{i+1}位: {item['name']} - **{item['total']}分**\n"
@@ -118,8 +128,17 @@ async def sub(ctx, name: str, minutes: int):
 @bot.command()
 @commands.has_role(KANKU_ROLE_ID)
 async def reset(ctx):
-    sheet.batch_clear(["B2:B10000"])
+    # 今月分(B列)のみクリアし、累計(C列)は維持
+    cell_list = sheet.range(f"B2:B{sheet.row_count}")
+    for cell in cell_list:
+        cell.value = ''
+    sheet.update_cells(cell_list)
     await ctx.send("🧹 幹部権限: 今月の勤務記録を全リセットしました。")
+
+@bot.event
+async def on_ready():
+    auto_reset_task.start()
+    print(f"{bot.user} が起動しました。")
 
 # --- 実行 ---
 if __name__ == "__main__":
