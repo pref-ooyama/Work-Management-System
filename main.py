@@ -19,7 +19,18 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+# 幹部設定
 KANKU_ROLE_ID = 1397055554144309358
+KANKU_ROLE_NAME = "管理部【ADD】--Admin Department"
+
+# 権限チェック用の関数
+def is_admin():
+    async def predicate(ctx):
+        # ロールID または ロール名 でチェック
+        has_id = any(role.id == KANKU_ROLE_ID for role in ctx.author.roles)
+        has_name = any(role.name == KANKU_ROLE_NAME for role in ctx.author.roles)
+        return has_id or has_name
+    return commands.check(predicate)
 
 # --- Flaskサーバー（Render維持用） ---
 app = Flask('')
@@ -45,8 +56,11 @@ def update_work_time_by_name(name, value, is_subtract=False):
         return value, value
 
     row = cell.row
-    val_b = int(sheet.cell(row, 2).value or 0)
-    val_c = int(sheet.cell(row, 3).value or 0)
+    # シートから値を取得（空文字の場合は0にする）
+    val_b_raw = sheet.cell(row, 2).value
+    val_c_raw = sheet.cell(row, 3).value
+    val_b = int(val_b_raw) if val_b_raw and str(val_b_raw).isdigit() else 0
+    val_c = int(val_c_raw) if val_c_raw and str(val_c_raw).isdigit() else 0
     
     new_month = max(0, val_b - value) if is_subtract else val_b + value
     new_total = max(0, val_c - value) if is_subtract else val_c + value
@@ -60,11 +74,10 @@ def update_work_time_by_name(name, value, is_subtract=False):
 async def auto_reset_task():
     JST = timezone(timedelta(hours=9))
     now = datetime.now(JST)
-    # 毎月1日にB列（今月分）をクリア（C列の累計は保持）
     if now.day == 1:
         cell_list = sheet.range(f"B2:B{sheet.row_count}")
         for cell in cell_list:
-            cell.value = ''
+            cell.value = 0
         sheet.update_cells(cell_list)
         print("Monthly reset completed.")
 
@@ -85,8 +98,8 @@ async def total(ctx, name: str = None):
     target = name if name else ctx.author.display_name
     cell = sheet.find(target)
     if cell:
-        m = sheet.cell(cell.row, 2).value
-        t = sheet.cell(cell.row, 3).value
+        m = sheet.cell(cell.row, 2).value or 0
+        t = sheet.cell(cell.row, 3).value or 0
         await ctx.send(f"📊 '{target}' さんの勤務時間\n今月: **{m}分** / 累計: **{t}分** です！")
     else:
         await ctx.send(f"❌ '{target}' さんはまだ記録がありません。")
@@ -100,7 +113,7 @@ async def ranking(ctx):
     rows = data[1:] 
     ranking_data = []
     for row in rows:
-        if len(row) >= 3 and row[2].isdigit():
+        if len(row) >= 3 and str(row[2]).isdigit():
             ranking_data.append({"name": row[0], "total": int(row[2])})
     
     sorted_ranking = sorted(ranking_data, key=lambda x: x["total"], reverse=True)
@@ -109,15 +122,35 @@ async def ranking(ctx):
         msg += f"{i+1}位: {item['name']} - **{item['total']}分**\n"
     await ctx.send(msg)
 
+@bot.command()
+async def mranking(ctx):
+    """月間ランキングを表示"""
+    data = sheet.get_all_values()
+    if len(data) <= 1:
+        return await ctx.send("❌ まだ記録がありません。")
+    
+    rows = data[1:]
+    ranking_data = []
+    for row in rows:
+        # B列（Index 1）が今月分
+        if len(row) >= 2 and str(row[1]).isdigit():
+            ranking_data.append({"name": row[0], "month": int(row[1])})
+    
+    sorted_ranking = sorted(ranking_data, key=lambda x: x["month"], reverse=True)
+    msg = "📅 **勤務時間ランキング（今月分）**\n"
+    for i, item in enumerate(sorted_ranking[:10]):
+        msg += f"{i+1}位: {item['name']} - **{item['month']}分**\n"
+    await ctx.send(msg)
+
 # --- 幹部用 ---
 @bot.command()
-@commands.has_role(KANKU_ROLE_ID)
+@is_admin()
 async def add(ctx, name: str, minutes: int):
     update_work_time_by_name(name, minutes, is_subtract=False)
     await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加しました。")
 
 @bot.command()
-@commands.has_role(KANKU_ROLE_ID)
+@is_admin()
 async def sub(ctx, name: str, minutes: int):
     month, _ = update_work_time_by_name(name, minutes, is_subtract=True)
     if month is not None:
@@ -126,18 +159,18 @@ async def sub(ctx, name: str, minutes: int):
         await ctx.send(f"❌ '{name}' さんが見つかりません。")
 
 @bot.command()
-@commands.has_role(KANKU_ROLE_ID)
+@is_admin()
 async def reset(ctx):
-    # 今月分(B列)のみクリアし、累計(C列)は維持
     cell_list = sheet.range(f"B2:B{sheet.row_count}")
     for cell in cell_list:
-        cell.value = ''
+        cell.value = 0
     sheet.update_cells(cell_list)
     await ctx.send("🧹 幹部権限: 今月の勤務記録を全リセットしました。")
 
 @bot.event
 async def on_ready():
-    auto_reset_task.start()
+    if not auto_reset_task.is_running():
+        auto_reset_task.start()
     print(f"{bot.user} が起動しました。")
 
 # --- 実行 ---
