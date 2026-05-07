@@ -79,8 +79,10 @@ def update_work_time(name, value, dept=None, is_subtract=False):
                 break
         else:
             if len(row) >= 1 and row[0] == name:
-                target_row = i + 1
-                break
+                d_val = row[4] if len(row) >= 5 else ""
+                if not d_val:
+                    target_row = i + 1
+                    break
 
     if not target_row:
         if is_subtract: return None, None
@@ -110,100 +112,128 @@ async def auto_reset_task():
         cell_list = sheet.range(f"B2:B{sheet.row_count}")
         for cell in cell_list: cell.value = 0
         sheet.update_cells(cell_list)
-        print("Monthly reset completed.")
 
 # --- コマンド ---
 
-# --- 部署別入力 ---
+# 部署別入力
 @bot.command()
 async def dwork(ctx, dept_input: str, minutes: int):
     dept_name, candidates = find_dept(dept_input)
-    if candidates: return await ctx.send(f"⚠️ 候補が複数あります: `{', '.join(candidates)}`")
-    if not dept_name: return await ctx.send(f"❌ 部署名 '{dept_input}' は見つかりません。")
+    if candidates: return await ctx.send(f"⚠️ 候補複数: `{', '.join(candidates)}`")
+    if not dept_name: return await ctx.send(f"❌ 部署名 '{dept_input}' 不明")
     month, total = update_work_time(ctx.author.display_name, minutes, dept=dept_name)
-    await ctx.send(f"✅ {ctx.author.display_name}さん [{dept_name}]\n{minutes}分追加しました（今月: {month}分 / 累計: {total}分）")
+    await ctx.send(f"✅ {ctx.author.display_name}さん [{dept_name}]\n{minutes}分追加（今月: {month} / 累計: {total}）")
 
-@bot.command()
-async def ddelete(ctx, dept_input: str, minutes: int):
-    dept_name, candidates = find_dept(dept_input)
-    if candidates: return await ctx.send(f"⚠️ 候補が複数あります: `{', '.join(candidates)}`")
-    if not dept_name: return await ctx.send(f"❌ 部署名 '{dept_input}' は見つかりません。")
-    month, total = update_work_time(ctx.author.display_name, minutes, dept=dept_name, is_subtract=True)
-    await ctx.send(f"⚠️ {ctx.author.display_name}さん [{dept_name}]\n{minutes}分削除しました（今月: {month}分 / 累計: {total}分）")
-
-# --- 従来の入力 ---
+# 個人入力（従来）
 @bot.command()
 async def work(ctx, minutes: int):
     month, total = update_work_time(ctx.author.display_name, minutes)
-    await ctx.send(f"✅ {ctx.author.display_name}さん、{minutes}分追加しました（今月: {month}分 / 累計: {total}分）。")
+    await ctx.send(f"✅ {ctx.author.display_name}さん、{minutes}分追加（今月: {month} / 累計: {total}）。")
 
 @bot.command()
 async def delete(ctx, minutes: int):
     month, total = update_work_time(ctx.author.display_name, minutes, is_subtract=True)
-    await ctx.send(f"⚠️ {ctx.author.display_name}さんの記録から{minutes}分削除しました。")
+    await ctx.send(f"⚠️ {ctx.author.display_name}さんの記録から{minutes}分削除。")
 
-# --- 表示・ランキング ---
+# 表示系
 @bot.command()
 async def total(ctx, name: str = None):
     target = name if name else ctx.author.display_name
     data = sheet.get_all_values()
     records = [row for row in data if len(row) >= 1 and row[0] == target]
-    if not records: return await ctx.send(f"❌ '{target}' さんの記録はありません。")
-    msg = f"📊 **{target} さんの勤務記録**\n"
+    if not records: return await ctx.send(f"❌ '{target}' さんの記録なし。")
+    msg = f"📊 **{target} さんの記録**\n"
     for r in records:
-        d_name = r[4] if len(r) >= 5 and r[4] else "指定なし"
+        d_name = r[4] if len(r) >= 5 and r[4] else "個人・未指定"
         msg += f"・{d_name}: 今月 {r[1]}分 / 累計 {r[2]}分\n"
     await ctx.send(msg)
 
 @bot.command()
 async def ranking(ctx):
-    """累計ランキング（上位10名）"""
+    """個人累計TOP10"""
     data = sheet.get_all_values()
-    if len(data) <= 1: return await ctx.send("❌ 記録がありません。")
-    r_list = []
-    for row in data[1:]:
-        if len(row) >= 3 and str(row[2]).isdigit():
-            label = f"{row[0]} ({row[4]})" if len(row) >= 5 and row[4] else row[0]
-            r_list.append({"label": label, "val": int(row[2])})
+    if len(data) <= 1: return await ctx.send("❌ 記録なし。")
+    r_list = [{"label": f"{r[0]}({r[4]})" if len(r)>=5 and r[4] else r[0], "val": int(r[2])} for r in data[1:] if len(r)>=3 and str(r[2]).isdigit()]
     sorted_r = sorted(r_list, key=lambda x: x["val"], reverse=True)
-    msg = "📊 **累計勤務ランキング (TOP 10)**\n"
-    for i, item in enumerate(sorted_r[:10]):
-        msg += f"{i+1}位: {item['label']} - **{item['val']}分**\n"
+    msg = "📊 **累計個人ランキング (TOP 10)**\n"
+    for i, item in enumerate(sorted_r[:10]): msg += f"{i+1}位: {item['label']} - {item['val']}分\n"
     await ctx.send(msg)
 
 @bot.command()
 async def mranking(ctx):
-    """今月のランキング（全員分）"""
+    """個人今月全員分"""
     data = sheet.get_all_values()
-    if len(data) <= 1: return await ctx.send("❌ 記録がありません。")
-    r_list = []
-    for row in data[1:]:
-        if len(row) >= 2 and str(row[1]).isdigit():
-            label = f"{row[0]} ({row[4]})" if len(row) >= 5 and row[4] else row[0]
-            r_list.append({"label": label, "val": int(row[1])})
+    if len(data) <= 1: return await ctx.send("❌ 記録なし。")
+    r_list = [{"label": f"{r[0]}({r[4]})" if len(r)>=5 and r[4] else r[0], "val": int(r[1])} for r in data[1:] if len(r)>=2 and str(r[1]).isdigit()]
     sorted_r = sorted(r_list, key=lambda x: x["val"], reverse=True)
-    msg = "📅 **今月の勤務ランキング (全員)**\n"
-    for i, item in enumerate(sorted_r):
-        msg += f"{i+1}位: {item['label']} - **{item['val']}分**\n"
-    
+    msg = "📅 **今月個人ランキング (全員)**\n"
+    for i, item in enumerate(sorted_r): msg += f"{i+1}位: {item['label']} - {item['val']}分\n"
     if len(msg) > 2000:
-        for chunk in [msg[i:i+1900] for i in range(0, len(msg), 1900)]:
-            await ctx.send(chunk)
-    else:
-        await ctx.send(msg)
+        for chunk in [msg[i:i+1900] for i in range(0, len(msg), 1900)]: await ctx.send(chunk)
+    else: await ctx.send(msg)
 
-# --- 幹部用 ---
+@bot.command()
+async def granking(ctx):
+    """部署対抗ランキング（今月の合計時間）"""
+    data = sheet.get_all_values()
+    if len(data) <= 1: return await ctx.send("❌ 記録なし。")
+    dept_totals = {}
+    for r in data[1:]:
+        if len(r) >= 5 and r[4]:
+            dept = r[4]
+            minutes = int(r[1]) if str(r[1]).isdigit() else 0
+            dept_totals[dept] = dept_totals.get(dept, 0) + minutes
+    if not dept_totals: return await ctx.send("❌ 部署ごとの記録なし。")
+    sorted_dept = sorted(dept_totals.items(), key=lambda x: x[1], reverse=True)
+    msg = "🏆 **部署対抗ランキング (今月の合計)**\n"
+    for i, (dept, total_min) in enumerate(sorted_dept):
+        msg += f"{i+1}位: {dept} - **{total_min}分**\n"
+    if len(msg) > 2000:
+        for chunk in [msg[i:i+1900] for i in range(0, len(msg), 1900)]: await ctx.send(chunk)
+    else: await ctx.send(msg)
+
+@bot.command()
+async def dranking(ctx, dept_input: str):
+    """指定部署内のランキング"""
+    dept_name, candidates = find_dept(dept_input)
+    if candidates: return await ctx.send(f"⚠️ 候補複数: `{', '.join(candidates)}`")
+    if not dept_name: return await ctx.send("❌ 部署名不明。")
+    data = sheet.get_all_values()
+    r_list = [{"name": r[0], "val": int(r[1])} for r in data[1:] if len(r)>=5 and r[4] == dept_name and str(r[1]).isdigit()]
+    if not r_list: return await ctx.send(f"❌ '{dept_name}' の記録なし。")
+    sorted_r = sorted(r_list, key=lambda x: x["val"], reverse=True)
+    msg = f"🏢 **{dept_name} 内ランキング**\n"
+    for i, item in enumerate(sorted_r): msg += f"{i+1}位: {item['name']} - {item['val']}分\n"
+    await ctx.send(msg)
+
+# 幹部用
 @bot.command()
 @is_admin()
 async def add(ctx, name: str, minutes: int):
     update_work_time(name, minutes)
-    await ctx.send(f"👮 幹部権限: '{name}' さんに {minutes}分追加。")
+    await ctx.send(f"👮 幹部: '{name}' に {minutes}分追加。")
 
 @bot.command()
 @is_admin()
 async def sub(ctx, name: str, minutes: int):
     update_work_time(name, minutes, is_subtract=True)
-    await ctx.send(f"⚠️ 幹部権限: '{name}' さんから {minutes}分削除。")
+    await ctx.send(f"⚠️ 幹部: '{name}' から {minutes}分削除。")
+
+@bot.command()
+@is_admin()
+async def dadd(ctx, name: str, dept_input: str, minutes: int):
+    dept_name, _ = find_dept(dept_input)
+    if not dept_name: return await ctx.send("❌ 部署名不明。")
+    update_work_time(name, minutes, dept=dept_name)
+    await ctx.send(f"👮 幹部: '{name}' の '{dept_name}' に {minutes}分追加。")
+
+@bot.command()
+@is_admin()
+async def dsub(ctx, name: str, dept_input: str, minutes: int):
+    dept_name, _ = find_dept(dept_input)
+    if not dept_name: return await ctx.send("❌ 部署名不明。")
+    update_work_time(name, minutes, dept=dept_name, is_subtract=True)
+    await ctx.send(f"⚠️ 幹部: '{name}' の '{dept_name}' から削除。")
 
 @bot.command()
 @is_admin()
@@ -211,12 +241,12 @@ async def reset(ctx):
     cell_list = sheet.range(f"B2:B{sheet.row_count}")
     for cell in cell_list: cell.value = 0
     sheet.update_cells(cell_list)
-    await ctx.send("🧹 幹部権限: 今月の勤務記録を全リセットしました。")
+    await ctx.send("🧹 今月の記録を全リセットしました。")
 
 @bot.event
 async def on_ready():
     if not auto_reset_task.is_running(): auto_reset_task.start()
-    print(f"{bot.user} が起動しました。")
+    print(f"{bot.user} 起動")
 
 if __name__ == "__main__":
     Thread(target=run_web).start()
