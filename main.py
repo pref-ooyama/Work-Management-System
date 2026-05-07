@@ -9,21 +9,24 @@ from threading import Thread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # --- 設定 ---
-creds_dict = json.loads(os.environ["GOOGLE_SHEETS_JSON"])
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-client = gspread.authorize(creds)
-sheet = client.open("勤務記録シート").sheet1 
+try:
+    creds_dict = json.loads(os.environ["GOOGLE_SHEETS_JSON"])
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    sheet = client.open("勤務記録シート").sheet1 
+except Exception as e:
+    print(f"初期設定エラー: {e}")
 
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.message_content = True 
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None) # デフォルトのhelpを無効化
 
 # 幹部設定
 KANKU_ROLE_ID = 1397055554144309358
 KANKU_ROLE_NAME = "管理部【ADD】--Admin Department"
 
-# 部署リスト
+# 部署リスト（省略なし）
 DEPT_ROLES = {
     1469839939293286400: "刑事課", 1469839945010122772: "交通課",
     1482332775330611231: "地域指導係", 1469838348733517998: "地域課",
@@ -89,107 +92,134 @@ def update_work_time(name, value, dept=None, is_subtract=False):
         sheet.append_row([name, value, value, "", dept if dept else ""])
         return value, value
 
-    val_b_raw = sheet.cell(target_row, 2).value
-    val_c_raw = sheet.cell(target_row, 3).value
-    def to_int(v):
-        try: return int(v) if v else 0
-        except: return 0
-    val_b, val_c = to_int(val_b_raw), to_int(val_c_raw)
-    
+    val_b = int(sheet.cell(target_row, 2).value or 0)
+    val_c = int(sheet.cell(target_row, 3).value or 0)
     new_month = max(0, val_b - value) if is_subtract else val_b + value
     new_total = max(0, val_c - value) if is_subtract else val_c + value
-    
     sheet.update_cell(target_row, 2, new_month)
     sheet.update_cell(target_row, 3, new_total)
     return new_month, new_total
 
-# --- 自動リセット ---
-@tasks.loop(hours=24)
-async def auto_reset_task():
-    JST = timezone(timedelta(hours=9))
-    now = datetime.now(JST)
-    if now.day == 1:
-        cell_list = sheet.range(f"B2:B{sheet.row_count}")
-        for cell in cell_list: cell.value = 0
-        sheet.update_cells(cell_list)
-
 # --- コマンド ---
 
 @bot.command()
-async def dwork(ctx, dept_input: str, minutes: int):
-    dept_name, candidates = find_dept(dept_input)
-    if candidates: return await ctx.send(f"⚠️ 候補複数: `{', '.join(candidates)}`")
-    if not dept_name: return await ctx.send(f"❌ 部署名 '{dept_input}' 不明")
-    month, total = update_work_time(ctx.author.display_name, minutes, dept=dept_name)
-    await ctx.send(f"✅ {ctx.author.display_name}さん [{dept_name}]\n{minutes}分追加（今月: {month} / 累計: {total}）")
+async def help(ctx):
+    """コマンド一覧を表示"""
+    help_msg = """
+📜 **勤務管理Bot コマンド一覧**
+
+**【一般：個人用】**
+`!work [分]` : 部署を指定せずに勤務時間を追加
+`!total [名前]` : 自分（または指定した人）の全記録を表示
+
+**【一般：部署用】**
+`!dwork [部署] [分]` : 指定した部署に勤務時間を追加
+`!dranking [部署]` : 指定した部署内のランキングを表示
+
+**【一般：ランキング】**
+`!mranking` : 今月の個人ランキング（全員）を表示
+`!ranking` : 累計の個人ランキング（TOP10）を表示
+`!granking` : 部署対抗ランキングを表示
+
+**【幹部専用】**
+`!add [名] [分]` : 指定した人の個人記録に時間を追加
+`!sub [名] [分]` : 指定した人の個人記録から時間を削除
+`!dadd [名] [部署] [分]` : 指定した人の部署記録に時間を追加
+`!dsub [名] [部署] [分]` : 指定した人の部署記録から時間を削除
+`!reset` : 今月の記録を全リセット（これやったらクビ）
+    """
+    await ctx.send(help_msg)
 
 @bot.command()
 async def work(ctx, minutes: int):
-    month, total = update_work_time(ctx.author.display_name, minutes)
-    await ctx.send(f"✅ {ctx.author.display_name}さん、{minutes}分追加（今月: {month} / 累計: {total}）。")
+    try:
+        month, total = update_work_time(ctx.author.display_name, minutes)
+        await ctx.send(f"✅ {ctx.author.display_name}さん、{minutes}分追加（今月: {month} / 累計: {total}）。")
+    except Exception as e: await ctx.send(f"❌ エラー: {e}")
+
+@bot.command()
+async def dwork(ctx, dept_input: str, minutes: int):
+    try:
+        dept_name, candidates = find_dept(dept_input)
+        if candidates: return await ctx.send(f"⚠️ 候補複数: `{', '.join(candidates)}`")
+        if not dept_name: return await ctx.send(f"❌ 部署名 '{dept_input}' 不明")
+        month, total = update_work_time(ctx.author.display_name, minutes, dept=dept_name)
+        await ctx.send(f"✅ {ctx.author.display_name}さん [{dept_name}]\n{minutes}分追加（今月: {month} / 累計: {total}）")
+    except Exception as e: await ctx.send(f"❌ エラー: {e}")
 
 @bot.command()
 async def total(ctx, name: str = None):
-    target = name if name else ctx.author.display_name
-    data = sheet.get_all_values()
-    records = [row for row in data if len(row) >= 1 and row[0] == target]
-    if not records: return await ctx.send(f"❌ '{target}' さんの記録なし。")
-    msg = f"📊 **{target} さんの記録**\n"
-    for r in records:
-        d_name = r[4] if len(r) >= 5 and r[4] else "個人・未指定"
-        msg += f"・{d_name}: 今月 {r[1]}分 / 累計 {r[2]}分\n"
-    await ctx.send(msg)
-
-@bot.command()
-async def ranking(ctx):
-    """個人累計ランキング (部署表示なし)"""
-    data = sheet.get_all_values()
-    if len(data) <= 1: return await ctx.send("❌ 記録なし。")
-    # labelから部署名の取得を削除
-    r_list = [{"label": r[0], "val": int(r[2])} for r in data[1:] if len(r)>=3 and str(r[2]).isdigit()]
-    sorted_r = sorted(r_list, key=lambda x: x["val"], reverse=True)
-    msg = "📊 **累計個人ランキング (TOP 10)**\n"
-    for i, item in enumerate(sorted_r[:10]): msg += f"{i+1}位: {item['label']} - {item['val']}分\n"
-    await ctx.send(msg)
-
-@bot.command()
-async def mranking(ctx):
-    """個人今月ランキング (部署表示なし)"""
-    data = sheet.get_all_values()
-    if len(data) <= 1: return await ctx.send("❌ 記録なし。")
-    # labelから部署名の取得を削除
-    r_list = [{"label": r[0], "val": int(r[1])} for r in data[1:] if len(r)>=2 and str(r[1]).isdigit()]
-    sorted_r = sorted(r_list, key=lambda x: x["val"], reverse=True)
-    msg = "📅 **今月個人ランキング (全員)**\n"
-    for i, item in enumerate(sorted_r): msg += f"{i+1}位: {item['label']} - {item['val']}分\n"
-    if len(msg) > 2000:
-        for chunk in [msg[i:i+1900] for i in range(0, len(msg), 1900)]: await ctx.send(chunk)
-    else: await ctx.send(msg)
+    try:
+        target = name if name else ctx.author.display_name
+        data = sheet.get_all_values()
+        records = [row for row in data if len(row) >= 1 and row[0] == target]
+        if not records: return await ctx.send(f"❌ '{target}' さんの記録なし。")
+        msg = f"📊 **{target} さんの記録**\n"
+        seen = set()
+        for r in records:
+            d_name = r[4] if len(r) >= 5 and r[4] else "個人・未指定"
+            if d_name in seen: continue
+            seen.add(d_name)
+            msg += f"・{d_name}: 今月 {r[1]}分 / 累計 {r[2]}分\n"
+        await ctx.send(msg)
+    except Exception as e: await ctx.send(f"❌ エラー: {e}")
 
 @bot.command()
 async def granking(ctx):
-    """部署対抗ランキング"""
-    data = sheet.get_all_values()
-    if len(data) <= 1: return await ctx.send("❌ 記録なし。")
-    dept_totals = {}
-    for r in data[1:]:
-        if len(r) >= 5 and r[4]:
-            dept = r[4]
-            minutes = int(r[1]) if str(r[1]).isdigit() else 0
-            dept_totals[dept] = dept_totals.get(dept, 0) + minutes
-    if not dept_totals: return await ctx.send("❌ 部署ごとの記録なし。")
-    sorted_dept = sorted(dept_totals.items(), key=lambda x: x[1], reverse=True)
-    msg = "🏆 **部署対抗ランキング (今月の合計)**\n"
-    for i, (dept, total_min) in enumerate(sorted_dept):
-        msg += f"{i+1}位: {dept} - **{total_min}分**\n"
-    if len(msg) > 2000:
-        for chunk in [msg[i:i+1900] for i in range(0, len(msg), 1900)]: await ctx.send(chunk)
-    else: await ctx.send(msg)
+    try:
+        data = sheet.get_all_values()
+        if len(data) <= 1: return await ctx.send("❌ 記録なし。")
+        dept_totals = {}
+        for r in data[1:]:
+            if len(r) >= 5 and r[4]:
+                dept = r[4]
+                minutes = int(r[1]) if str(r[1]).isdigit() else 0
+                dept_totals[dept] = dept_totals.get(dept, 0) + minutes
+        if not dept_totals: return await ctx.send("❌ 部署ごとの記録なし。")
+        sorted_dept = sorted(dept_totals.items(), key=lambda x: x[1], reverse=True)
+        msg = "🏆 **部署対抗ランキング (今月の合計)**\n"
+        for i, (dept, total_min) in enumerate(sorted_dept):
+            msg += f"{i+1}位: {dept} - **{total_min}分**\n"
+        await ctx.send(msg)
+    except Exception as e: await ctx.send(f"❌ エラー: {e}")
+
+@bot.command()
+async def mranking(ctx):
+    try:
+        data = sheet.get_all_values()
+        if len(data) <= 1: return await ctx.send("❌ 記録なし。")
+        r_list = [{"label": r[0], "val": int(r[1])} for r in data[1:] if len(r)>=2 and str(r[1]).isdigit()]
+        sorted_r = sorted(r_list, key=lambda x: x["val"], reverse=True)
+        msg = "📅 **今月個人ランキング (全員)**\n"
+        for i, item in enumerate(sorted_r): msg += f"{i+1}位: {item['label']} - {item['val']}分\n"
+        await ctx.send(msg)
+    except Exception as e: await ctx.send(f"❌ エラー: {e}")
+
+@bot.command()
+async def ranking(ctx):
+    try:
+        data = sheet.get_all_values()
+        if len(data) <= 1: return await ctx.send("❌ 記録なし。")
+        r_list = [{"label": r[0], "val": int(r[2])} for r in data[1:] if len(r)>=3 and str(r[2]).isdigit()]
+        sorted_r = sorted(r_list, key=lambda x: x["val"], reverse=True)
+        msg = "📊 **累計個人ランキング (TOP 10)**\n"
+        for i, item in enumerate(sorted_r[:10]): msg += f"{i+1}位: {item['label']} - {item['val']}分\n"
+        await ctx.send(msg)
+    except Exception as e: await ctx.send(f"❌ エラー: {e}")
+
+@bot.command()
+@is_admin()
+async def dadd(ctx, name: str, dept_input: str, minutes: int):
+    try:
+        dept_name, _ = find_dept(dept_input)
+        if not dept_name: return await ctx.send("❌ 部署名不明。")
+        month, total = update_work_time(name, minutes, dept=dept_name)
+        await ctx.send(f"👮 幹部: '{name}' の '{dept_name}' に {minutes}分追加。")
+    except Exception as e: await ctx.send(f"❌ エラー: {e}")
 
 @bot.event
 async def on_ready():
-    if not auto_reset_task.is_running(): auto_reset_task.start()
-    print(f"{bot.user} 起動")
+    print(f"Logged in as {bot.user}")
 
 if __name__ == "__main__":
     Thread(target=run_web).start()
