@@ -26,7 +26,6 @@ KANKU_ROLE_NAME = "管理部【ADD】--Admin Department"
 # 権限チェック用の関数
 def is_admin():
     async def predicate(ctx):
-        # ロールID または ロール名 でチェック
         has_id = any(role.id == KANKU_ROLE_ID for role in ctx.author.roles)
         has_name = any(role.name == KANKU_ROLE_NAME for role in ctx.author.roles)
         return has_id or has_name
@@ -56,7 +55,6 @@ def update_work_time_by_name(name, value, is_subtract=False):
         return value, value
 
     row = cell.row
-    # シートから値を取得（空文字の場合は0にする）
     val_b_raw = sheet.cell(row, 2).value
     val_c_raw = sheet.cell(row, 3).value
     val_b = int(val_b_raw) if val_b_raw and str(val_b_raw).isdigit() else 0
@@ -123,7 +121,7 @@ async def ranking(ctx):
 
 @bot.command()
 async def mranking(ctx):
-    """月間ランキングを表示"""
+    """月間ランキングを表示（全員分表示）"""
     data = sheet.get_all_values()
     if len(data) <= 1:
         return await ctx.send("❌ まだ記録がありません。")
@@ -135,10 +133,19 @@ async def mranking(ctx):
             ranking_data.append({"name": row[0], "month": int(row[1])})
 
     sorted_ranking = sorted(ranking_data, key=lambda x: x["month"], reverse=True)
-    msg = "📅 **勤務時間ランキング（今月分）**\n"
-    for i, item in enumerate(sorted_ranking[:10]):
-        msg += f"{i+1}位: {item['name']} - **{item['month']}分**\n"
-    await ctx.send(msg)
+    
+    msg = "📅 **勤務時間ランキング（今月分 / 全員表示）**\n"
+    for i, item in enumerate(sorted_ranking):
+        line = f"{i+1}位: {item['name']} - **{item['month']}分**\n"
+        
+        # 1メッセージ2000文字制限対策
+        if len(msg) + len(line) > 1900:
+            await ctx.send(msg)
+            msg = ""
+        msg += line
+
+    if msg:
+        await ctx.send(msg)
 
 # --- 幹部用 ---
 @bot.command()
